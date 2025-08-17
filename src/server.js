@@ -29,7 +29,7 @@ app.use(helmet());
 
 // CORS configuration
 app.use(cors({
-  origin: 'https://3000-iz0xp1pxclkr45eggx6m0-7284c976.manusvm.computer',
+  origin: 'http://localhost:3000',
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]

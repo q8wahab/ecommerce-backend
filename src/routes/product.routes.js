@@ -51,6 +51,9 @@ const idValidation = [
 // Public routes
 router.get('/', getProducts);
 router.get('/:idOrSlug', getProduct);
+// Add this route if it doesn't exist
+
+
 
 // Admin routes
 router.post('/', requireAuth, requireAdmin, productValidation, validate, createProduct);
