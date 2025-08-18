@@ -79,9 +79,9 @@ const getProduct = async (req, res) => {
       product = await Product.findOne({ slug: idOrSlug }).populate('category', 'name slug');
     }
     
-    // if (!product || product.status !== 'active') {
-      // return res.status(404).json({ error: 'Product not found' });
-    // }
+    if (!product || product.status !== 'active') {
+      return res.status(404).json({ error: 'Product not found' });
+    }
     
     res.json(product);
   } catch (error) {
