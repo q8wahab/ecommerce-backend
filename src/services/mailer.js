@@ -4,12 +4,15 @@ const nodemailer = require('nodemailer');
 const {
   SMTP_HOST = 'smtp.ethereal.email',
   SMTP_PORT = '587',
-  SMTP_SECURE = 'false', // true لمنفذ 465 (SSL). لـ 587 يكون STARTTLS
+  SMTP_SECURE = 'false',
   SMTP_USER,
   SMTP_PASS,
   SMTP_FROM = '24ozKw Store <noreply@24ozkw.com>',
-  // 👇 افتراضي دائم لبريدك كـ BCC
-  ORDER_RECEIVER_EMAIL = '24ozkw@gmail.com',
+  ORDER_RECEIVER_EMAIL,
+  // 👇 جديدة من .env
+  SMTP_LOG = 'false',
+  SMTP_DEBUG = 'false',
+  SMTP_QUIET = 'false',
 } = process.env;
 
 let transporter;
@@ -17,49 +20,46 @@ let transporter;
 function getTransporter() {
   if (transporter) return transporter;
 
+  const enableLogger = String(SMTP_LOG).toLowerCase() === 'true';
+  const enableDebug  = String(SMTP_DEBUG).toLowerCase() === 'true';
+
   transporter = nodemailer.createTransport({
     host: SMTP_HOST,
     port: Number(SMTP_PORT) || 587,
-    secure:
-      String(SMTP_SECURE).toLowerCase() === 'true' ||
-      Number(SMTP_PORT) === 465,
+    secure: String(SMTP_SECURE).toLowerCase() === 'true' || Number(SMTP_PORT) === 465,
     auth: { user: SMTP_USER, pass: SMTP_PASS },
-    logger: true, // اطبع لوجات SMTP
-    debug: true,  // Debug من Nodemailer
+    logger: enableLogger,
+    debug: enableDebug,
+    // tls: { ciphers: 'TLSv1.2' }, // اختياري، عادةً غير مطلوب
   });
 
   return transporter;
 }
 
-/**
- * إرسال إيميل عام — يدعم إرسال بدون "to" (يرسل فقط BCC لك)
- * @param {object} opts
- * @param {string} [opts.to]           بريد العميل (اختياري)
- * @param {string} [opts.subject]
- * @param {string} [opts.html]
- * @param {string} [opts.text]
- * @param {Array}  [opts.attachments]
- * @param {string} [opts.replyTo]      افتراضيًا بريد العميل لو متوفر
- */
-async function sendMail({ to, subject, html, text, attachments, replyTo } = {}) {
+async function sendMail({ to, subject, html, text, attachments } = {}) {
   const t = getTransporter();
-
   const info = await t.sendMail({
     from: SMTP_FROM,
-    to: to || undefined,                         // ممكن يكون فاضي (سيرسل فقط BCC)
-    bcc: ORDER_RECEIVER_EMAIL || undefined,      // نسخة لك دائمًا
-    replyTo: replyTo || to || undefined,         // خلّ الرد يروح للعميل إن وُجد
+    to: to || undefined,
+    bcc: ORDER_RECEIVER_EMAIL || undefined,
     subject,
     html,
     text,
     attachments,
   });
 
-  console.log('Email sent:', info.messageId);
+  const enableLogger = String(SMTP_LOG).toLowerCase() === 'true';
+  const enableDebug  = String(SMTP_DEBUG).toLowerCase() === 'true';
+  const quiet        = String(SMTP_QUIET).toLowerCase() === 'true';
 
-  // لو Ethereal، يطلع URL للمعاينة
-  const preview = nodemailer.getTestMessageUrl(info);
-  if (preview) console.log('Preview URL:', preview);
+  // لو ما فيه لوج تفصيلي، اطبع سطر بسيط فقط (أو ولا شيء لو quiet=true)
+  if (!enableLogger && !enableDebug) {
+    if (!quiet) console.log('Email sent successfully');
+  } else {
+    console.log('Email sent:', info.messageId);
+    const preview = nodemailer.getTestMessageUrl(info);
+    if (preview) console.log('Preview URL:', preview);
+  }
 
   return info;
 }
