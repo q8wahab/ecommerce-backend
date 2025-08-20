@@ -1,3 +1,4 @@
+// routes/order.routes.js
 const express = require('express');
 const { body, param } = require('express-validator');
 const { createOrder, getOrder } = require('../controllers/order.controller');
@@ -6,62 +7,75 @@ const validate = require('../middlewares/validate');
 
 const router = express.Router();
 
-// Validation rules
-const orderValidation = [
-  body('email')
-    .isEmail()
-    .normalizeEmail()
-    .withMessage('Please provide a valid email'),
+/**
+ * التحقق لطلب إنشاء الأوردر:
+ * - لا نثق بأي أسعار قادمة من الفرونت — الكنترولر يحسب الأسعار من الداتابيس
+ * - نسمح بـ product أو productId للرجعية
+ */
+const createOrderValidation = [
+  // customer
+  body('customer.name')
+    .trim().notEmpty().withMessage('Customer name is required'),
+  body('customer.phone')
+    .exists().withMessage('Phone is required')
+    .bail()
+    .matches(/^\d{8}$/).withMessage('Phone must be exactly 8 digits'),
+  body('customer.email')
+    .optional({ nullable: true })
+    .isEmail().withMessage('Invalid email')
+    .bail()
+    .normalizeEmail(),
+
+  // shippingAddress
+  body('shippingAddress.area')
+    .trim().notEmpty().withMessage('Area is required'),
+  body('shippingAddress.block')
+    .trim().notEmpty().withMessage('Block is required'),
+  body('shippingAddress.street')
+    .trim().notEmpty().withMessage('Street is required'),
+  body('shippingAddress.avenue')
+    .optional({ nullable: true }).trim(),
+  body('shippingAddress.houseNo')
+    .trim().notEmpty().withMessage('House number is required'),
+  body('shippingAddress.notes')
+    .optional({ nullable: true }).trim(),
+
+  // items
   body('items')
-    .isArray({ min: 1 })
-    .withMessage('Items array is required and must not be empty'),
+    .isArray({ min: 1 }).withMessage('Items array is required and must not be empty'),
+
+  // ندعم product أو productId
+  body('items.*.product')
+    .optional({ nullable: true })
+    .isMongoId().withMessage('items.*.product must be a valid MongoDB ObjectId'),
   body('items.*.productId')
-    .isMongoId()
-    .withMessage('Product ID must be a valid MongoDB ObjectId'),
-  body('items.*.title')
-    .trim()
-    .notEmpty()
-    .withMessage('Item title is required'),
-  body('items.*.priceInFils')
-    .isInt({ min: 0 })
-    .withMessage('Item price must be a positive integer'),
+    .optional({ nullable: true })
+    .isMongoId().withMessage('items.*.productId must be a valid MongoDB ObjectId'),
+
   body('items.*.qty')
-    .isInt({ min: 1 })
-    .withMessage('Item quantity must be at least 1'),
-  body('shippingInFils')
-    .isInt({ min: 0 })
-    .withMessage('Shipping cost must be a non-negative integer'),
-  body('address.firstName')
-    .trim()
-    .notEmpty()
-    .withMessage('First name is required'),
-  body('address.lastName')
-    .trim()
-    .notEmpty()
-    .withMessage('Last name is required'),
-  body('address.line1')
-    .trim()
-    .notEmpty()
-    .withMessage('Address line 1 is required'),
-  body('address.country')
-    .trim()
-    .notEmpty()
-    .withMessage('Country is required'),
-  body('address.zip')
-    .trim()
-    .notEmpty()
-    .withMessage('ZIP code is required')
+    .isInt({ min: 1 }).withMessage('Each item qty must be at least 1'),
+
+  // تأكيد وجود أحد الحقلين product أو productId لكل عنصر
+  body('items').custom((items) => {
+    if (!Array.isArray(items)) return false;
+    for (const it of items) {
+      if (!it || (!it.product && !it.productId)) {
+        throw new Error('Each item must include product or productId');
+      }
+    }
+    return true;
+  }),
 ];
 
-const idValidation = [
-  param('id')
-    .isMongoId()
-    .withMessage('Invalid order ID')
-];
+// POST /api/orders  (ضيوف مسموح)
+router.post('/', createOrderValidation, validate, createOrder);
 
-// Routes
-router.post('/', orderValidation, validate, createOrder);
-router.get('/:id', requireAuth, idValidation, validate, getOrder);
+// GET /api/orders/:id (يتطلب تسجيل دخول؛ الكنترولر يتحقق من الملكية/الأدمن)
+router.get('/:id',
+  requireAuth,
+  [param('id').isMongoId().withMessage('Invalid order ID')],
+  validate,
+  getOrder
+);
 
 module.exports = router;
-

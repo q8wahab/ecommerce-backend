@@ -1,106 +1,168 @@
+// controllers/order.controller.js
 const Order = require('../models/Order');
 const Product = require('../models/Product');
+const { genInvoiceNo } = require('../utils/invoice'); // تأكد الملف موجود كما أرسلته لك
 
-const createOrder = async (req, res) => {
+const toInt = (x, def = 0) => {
+  const n = parseInt(x, 10);
+  return Number.isFinite(n) ? n : def;
+};
+
+exports.createOrder = async (req, res) => {
   try {
-    const { email, items, shippingInFils, address } = req.body;
-    
-    // Validate items and calculate subtotal
-    let subtotalInFils = 0;
-    const validatedItems = [];
-    
-    for (const item of items) {
-      const product = await Product.findById(item.productId);
-      if (!product || product.status !== 'active') {
-        return res.status(400).json({ 
-          error: `Product not found: ${item.productId}` 
-        });
-      }
-      
-      if (product.stock < item.qty) {
-        return res.status(400).json({ 
-          error: `Insufficient stock for product: ${product.title}` 
-        });
-      }
-      
-      const itemTotal = product.priceInFils * item.qty;
-      subtotalInFils += itemTotal;
-      
-      validatedItems.push({
-        product: product._id,
-        title: product.title,
-        priceInFils: product.priceInFils,
-        currency: product.currency,
-        qty: item.qty
-      });
+    const { customer = {}, shippingAddress = {}, items = [] } = req.body || {};
+
+    // ✅ تحقق من الحقول المطلوبة
+    if (
+      !customer?.name ||
+      !customer?.phone ||
+      !shippingAddress?.area ||
+      !shippingAddress?.block ||
+      !shippingAddress?.street ||
+      !shippingAddress?.houseNo
+    ) {
+      return res.status(400).json({ error: 'Missing required fields' });
     }
-    
-    const totalInFils = subtotalInFils + shippingInFils;
-    
-    // Create order
-    const order = new Order({
-      user: req.user?._id || null,
-      email,
-      items: validatedItems,
-      subtotalInFils,
-      shippingInFils,
-      totalInFils,
-      address
+
+    // ✅ رقم الهاتف 8 أرقام بالضبط
+    const phoneDigits = String(customer.phone).replace(/\D/g, '');
+    if (!/^\d{8}$/.test(phoneDigits)) {
+      return res.status(400).json({ error: 'Phone must be exactly 8 digits' });
+    }
+
+    // ✅ عناصر الطلب
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Order items are required' });
+    }
+
+    // نقّي IDs (ندعم product أو productId للرجعية)
+    const productIds = [
+      ...new Set(
+        items
+          .map((i) => i.product || i.productId)
+          .filter(Boolean)
+          .map(String)
+      ),
+    ];
+
+    if (productIds.length === 0) {
+      return res.status(400).json({ error: 'No valid product IDs' });
+    }
+
+    const dbProducts = await Product.find({
+      _id: { $in: productIds },
+      status: 'active',
+    }).select('title priceInFils images stock currency');
+
+    const byId = new Map(dbProducts.map((p) => [String(p._id), p]));
+
+    const orderItems = [];
+    let subtotal = 0;
+
+    for (const line of items) {
+      const pid = String(line.product || line.productId || '');
+      const qty = Math.max(1, toInt(line.qty, 1));
+      const p = byId.get(pid);
+
+      if (!p) {
+        return res.status(400).json({ error: `Product not found or inactive: ${pid}` });
+      }
+      if (Number.isFinite(p.stock) && p.stock < qty) {
+        return res.status(400).json({ error: `Insufficient stock for product: ${p.title}` });
+      }
+
+      const price = toInt(p.priceInFils, 0);
+      const image = p.images?.find((i) => i.isPrimary)?.url || p.images?.[0]?.url || null;
+
+      orderItems.push({
+        product: p._id,
+        title: p.title,
+        priceInFils: price,
+        currency: p.currency || 'KWD',
+        qty,
+        image,
+      });
+
+      subtotal += price * qty;
+    }
+
+    if (orderItems.length === 0) {
+      return res.status(400).json({ error: 'No valid items to order' });
+    }
+
+    // ✅ سياسة الشحن (ENV أو افتراضات)
+    const THRESHOLD = toInt(process.env.FREE_SHIP_THRESHOLD_IN_FILS, 15000); // 15 KWD
+    const BASE_SHIP = toInt(process.env.BASE_SHIPPING_IN_FILS, 2000);        // 2 KWD
+
+    const shipping = subtotal >= THRESHOLD ? 0 : BASE_SHIP;
+    const total = subtotal + shipping;
+
+    // ✅ أنشئ الطلب
+    const order = await Order.create({
+      invoiceNo: genInvoiceNo(),
+      user: req.user?._id || null, // اختياري حالياً
+      customer: {
+        name: customer.name.trim(),
+        phone: phoneDigits,
+        email: (customer.email || '').trim(),
+      },
+      shippingAddress: {
+        area: shippingAddress.area.trim(),
+        block: shippingAddress.block.trim(),
+        street: shippingAddress.street.trim(),
+        avenue: (shippingAddress.avenue || '').trim(),
+        houseNo: shippingAddress.houseNo.trim(),
+        notes: (shippingAddress.notes || '').trim(),
+      },
+      items: orderItems,
+      subtotalInFils: subtotal,
+      shippingInFils: shipping,
+      totalInFils: total,
+      status: 'pending',
     });
-    
-    await order.save();
-    
-    // Update product stock
-    for (const item of validatedItems) {
-      await Product.findByIdAndUpdate(item.product, {
-        $inc: { stock: -item.qty }
-      });
-    }
-    
-    res.status(201).json({
+
+    // ✅ نقص المخزون (Best-effort)
+    await Promise.all(
+      orderItems.map((it) =>
+        Product.updateOne({ _id: it.product }, { $inc: { stock: -it.qty } })
+      )
+    );
+
+    return res.status(201).json({
       id: order._id,
-      subtotalInFils,
-      shippingInFils,
-      totalInFils,
+      invoiceNo: order.invoiceNo,
+      subtotalInFils: order.subtotalInFils,
+      shippingInFils: order.shippingInFils,
+      totalInFils: order.totalInFils,
       status: order.status,
-      createdAt: order.createdAt
+      createdAt: order.createdAt,
     });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return res.status(400).json({ error: error.message });
   }
 };
 
-const getOrder = async (req, res) => {
+exports.getOrder = async (req, res) => {
   try {
     const { id } = req.params;
-    
-    let query = { _id: id };
-    
-    // If user is not admin, only allow access to their own orders
-    if (req.user.role !== 'admin') {
-      if (req.user._id) {
-        query.user = req.user._id;
-      } else {
-        return res.status(403).json({ error: 'Access denied' });
-      }
-    }
-    
-    const order = await Order.findOne(query)
+
+    const order = await Order.findById(id)
       .populate('items.product', 'title slug images')
       .populate('user', 'name email');
-    
+
     if (!order) {
       return res.status(404).json({ error: 'Order not found' });
     }
-    
-    res.json(order);
+
+    // لو عندك تسجيل دخول وكان المستخدم ليس أدمن
+    if (req.user && req.user.role !== 'admin') {
+      if (!order.user || String(order.user._id) !== String(req.user._id)) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+    }
+
+    return res.json(order);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 };
-
-module.exports = {
-  createOrder,
-  getOrder
-};
-
