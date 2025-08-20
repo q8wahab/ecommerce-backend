@@ -1,7 +1,8 @@
 // controllers/order.controller.js
 const Order = require('../models/Order');
 const Product = require('../models/Product');
-const { genInvoiceNo } = require('../utils/invoice'); // تأكد الملف موجود كما أرسلته لك
+const { genInvoiceNo } = require('../utils/invoice');
+const { sendOrderInvoiceEmail } = require('../services/invoice-mailer');
 
 const toInt = (x, def = 0) => {
   const n = parseInt(x, 10);
@@ -12,7 +13,7 @@ exports.createOrder = async (req, res) => {
   try {
     const { customer = {}, shippingAddress = {}, items = [] } = req.body || {};
 
-    // ✅ تحقق من الحقول المطلوبة
+    // الحقول المطلوبة
     if (
       !customer?.name ||
       !customer?.phone ||
@@ -24,18 +25,18 @@ exports.createOrder = async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // ✅ رقم الهاتف 8 أرقام بالضبط
+    // رقم الهاتف 8 أرقام
     const phoneDigits = String(customer.phone).replace(/\D/g, '');
     if (!/^\d{8}$/.test(phoneDigits)) {
       return res.status(400).json({ error: 'Phone must be exactly 8 digits' });
     }
 
-    // ✅ عناصر الطلب
+    // عناصر الطلب
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Order items are required' });
     }
 
-    // نقّي IDs (ندعم product أو productId للرجعية)
+    // IDs (ندعم product أو productId للرجعية)
     const productIds = [
       ...new Set(
         items
@@ -44,7 +45,6 @@ exports.createOrder = async (req, res) => {
           .map(String)
       ),
     ];
-
     if (productIds.length === 0) {
       return res.status(400).json({ error: 'No valid product IDs' });
     }
@@ -72,7 +72,10 @@ exports.createOrder = async (req, res) => {
       }
 
       const price = toInt(p.priceInFils, 0);
-      const image = p.images?.find((i) => i.isPrimary)?.url || p.images?.[0]?.url || null;
+      const image =
+        p.images?.find((i) => i.isPrimary)?.url ||
+        p.images?.[0]?.url ||
+        null;
 
       orderItems.push({
         product: p._id,
@@ -90,14 +93,13 @@ exports.createOrder = async (req, res) => {
       return res.status(400).json({ error: 'No valid items to order' });
     }
 
-    // ✅ سياسة الشحن (ENV أو افتراضات)
+    // سياسة الشحن
     const THRESHOLD = toInt(process.env.FREE_SHIP_THRESHOLD_IN_FILS, 15000); // 15 KWD
     const BASE_SHIP = toInt(process.env.BASE_SHIPPING_IN_FILS, 2000);        // 2 KWD
-
     const shipping = subtotal >= THRESHOLD ? 0 : BASE_SHIP;
     const total = subtotal + shipping;
 
-    // ✅ أنشئ الطلب
+    // أنشئ الطلب
     const order = await Order.create({
       invoiceNo: genInvoiceNo(),
       user: req.user?._id || null, // اختياري حالياً
@@ -121,12 +123,17 @@ exports.createOrder = async (req, res) => {
       status: 'pending',
     });
 
-    // ✅ نقص المخزون (Best-effort)
-    await Promise.all(
+    // نقص المخزون (best-effort)
+    Promise.all(
       orderItems.map((it) =>
         Product.updateOne({ _id: it.product }, { $inc: { stock: -it.qty } })
       )
-    );
+    ).catch((e) => console.error('Stock decrement error:', e.message));
+
+    // إرسال الفاتورة على الإيميل دون انتظار (fire-and-forget)
+    sendOrderInvoiceEmail(order).catch((e) => {
+      console.error('Email send error:', e.message);
+    });
 
     return res.status(201).json({
       id: order._id,
@@ -154,7 +161,6 @@ exports.getOrder = async (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    // لو عندك تسجيل دخول وكان المستخدم ليس أدمن
     if (req.user && req.user.role !== 'admin') {
       if (!order.user || String(order.user._id) !== String(req.user._id)) {
         return res.status(403).json({ error: 'Access denied' });
