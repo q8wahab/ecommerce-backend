@@ -1,3 +1,4 @@
+// models/Product.js
 const mongoose = require('mongoose');
 
 const productSchema = new mongoose.Schema({
@@ -18,11 +19,22 @@ const productSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+
+  // السعر الحالي (إلزامي) — بالفلس
   priceInFils: {
     type: Number,
     required: true,
     min: 0
   },
+
+  // السعر القديم (اختياري) — بالفلس
+  // ✅ بدون validator يعتمد على this — المقارنة تتم في الكنترولر
+  oldPriceInFils: {
+    type: Number,
+    min: 0,
+    default: null
+  },
+
   currency: {
     type: String,
     default: 'KWD'
@@ -67,8 +79,15 @@ const productSchema = new mongoose.Schema({
     default: 'active'
   }
 }, {
-  timestamps: true
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
+});
+
+// نسبة الخصم (null إذا ما فيه oldPriceInFils أو غير أكبر)
+productSchema.virtual('discountPercent').get(function () {
+  if (this.oldPriceInFils == null || this.oldPriceInFils <= this.priceInFils) return null;
+  return Math.round((1 - this.priceInFils / this.oldPriceInFils) * 100);
 });
 
 module.exports = mongoose.model('Product', productSchema);
-
