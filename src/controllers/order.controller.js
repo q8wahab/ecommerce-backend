@@ -1,8 +1,11 @@
-// controllers/order.controller.js
+// src/controllers/order.controller.js
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const { genInvoiceNo } = require('../utils/invoice');
 const { sendOrderInvoiceEmail } = require('../services/invoice-mailer');
+
+// ✅ خدمة واتساب بالقالب
+const { sendOrderWhatsApp, toWhatsAppE164 } = require('../services/whatsapp');
 
 const toInt = (x, def = 0) => {
   const n = parseInt(x, 10);
@@ -11,7 +14,7 @@ const toInt = (x, def = 0) => {
 
 exports.createOrder = async (req, res) => {
   try {
-    const { customer = {}, shippingAddress = {}, items = [] } = req.body || {};
+    const { customer = {}, shippingAddress = {}, items = [], paymentMethod } = req.body || {};
 
     // الحقول المطلوبة
     if (
@@ -31,12 +34,10 @@ exports.createOrder = async (req, res) => {
       return res.status(400).json({ error: 'Phone must be exactly 8 digits' });
     }
 
-    // عناصر الطلب
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Order items are required' });
     }
 
-    // IDs (ندعم product أو productId للرجعية)
     const productIds = [
       ...new Set(
         items
@@ -94,15 +95,14 @@ exports.createOrder = async (req, res) => {
     }
 
     // سياسة الشحن
-    const THRESHOLD = toInt(process.env.FREE_SHIP_THRESHOLD_IN_FILS, 15000); // 15 KWD
-    const BASE_SHIP = toInt(process.env.BASE_SHIPPING_IN_FILS, 2000);        // 2 KWD
+    const THRESHOLD = toInt(process.env.FREE_SHIP_THRESHOLD_IN_FILS, 15000);
+    const BASE_SHIP = toInt(process.env.BASE_SHIPPING_IN_FILS, 2000);
     const shipping = subtotal >= THRESHOLD ? 0 : BASE_SHIP;
     const total = subtotal + shipping;
 
-    // أنشئ الطلب
     const order = await Order.create({
       invoiceNo: genInvoiceNo(),
-      user: req.user?._id || null, // اختياري حالياً
+      user: req.user?._id || null,
       customer: {
         name: customer.name.trim(),
         phone: phoneDigits,
@@ -130,10 +130,45 @@ exports.createOrder = async (req, res) => {
       )
     ).catch((e) => console.error('Stock decrement error:', e.message));
 
-    // إرسال الفاتورة على الإيميل دون انتظار (fire-and-forget)
+    // إيميل (غير مُعطِّل لسير الطلب)
     sendOrderInvoiceEmail(order).catch((e) => {
       console.error('Email send error:', e.message);
     });
+
+    // واتساب بالقالب المعتمد (Fire-and-forget)
+    (async () => {
+      try {
+        const totalKwd = (order.totalInFils / 1000).toFixed(3);
+        const currency = order.items?.[0]?.currency || 'KWD';
+        const payMethod = paymentMethod ||' سيتم إرسال رابط الدفع لكم لتأكيد الطلب';
+        const address = `${order.shippingAddress.area}, Block ${order.shippingAddress.block}, Street ${order.shippingAddress.street}, House ${order.shippingAddress.houseNo}`;
+        const eta = 'Within 24 hours';
+
+        // القالب الإنجليزي اللي عطيتني:
+        // Hi {{1}} 👋
+        // We’ve received your order {{2}} successfully.
+        // Total: {{3}} {{4}}
+        // Payment method: {{5}}
+        // Shipping address: {{6}}
+        // Estimated delivery: {{7}}
+        const vars = {
+          "1": order.customer.name,
+          "2": order.invoiceNo,
+          "3": totalKwd,
+          "4": currency,
+          "5": payMethod,
+          "6": address,
+          "7": eta
+        };
+
+        await sendOrderWhatsApp({
+          toE164: toWhatsAppE164(order.customer.phone), // يقبل 8 أرقام محلية
+          vars
+        });
+      } catch (e) {
+        console.error('[whatsapp after order]', e.message);
+      }
+    })();
 
     return res.status(201).json({
       id: order._id,

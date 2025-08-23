@@ -1,18 +1,30 @@
 // routes/product.routes.js
 const express = require('express');
 const { body, param } = require('express-validator');
-const { 
-  getProducts, 
-  getProduct, 
-  createProduct, 
-  updateProduct, 
+const multer = require('multer');
+
+const {
+  getProducts,
+  getProduct,
+  createProduct,
+  updateProduct,
   deleteProduct,
-  updateProductImages 
+  updateProductImages,
+  // 👇 جديد
+  exportProductsCSV,
+  importProductsCSV,
 } = require('../controllers/product.controller');
+
 const { requireAuth, requireAdmin } = require('../middlewares/auth');
 const validate = require('../middlewares/validate');
 
 const router = express.Router();
+
+// ===== Multer (in-memory) لرفع CSV =====
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+});
 
 // ---------- Validation: create ----------
 const productValidation = [
@@ -34,19 +46,18 @@ const productValidation = [
     .withMessage('Description must be less than 2000 characters'),
 
   body('priceInFils')
-    .toInt() // ✅ نحول لنمبر
+    .toInt()
     .isInt({ min: 0 })
     .withMessage('Price must be a positive integer'),
 
-  // ✅ oldPriceInFils اختياري؛ لو موجود لازم ≥0 و > priceInFils
   body('oldPriceInFils')
     .optional({ nullable: true })
-    .customSanitizer(v => (v === '' ? null : v))  // "" => null
-    .toInt() // يحول (لو مو null)
+    .customSanitizer(v => (v === '' ? null : v))
+    .toInt()
     .custom((v, { req }) => {
-      if (v == null) return true; // null أو undefined = بدون خصم
+      if (v == null) return true;
       const price = Number(req.body.priceInFils);
-      if (Number.isNaN(price)) return true; // لو ما وصل price هنا (نادرًا)
+      if (Number.isNaN(price)) return true;
       return v > price;
     })
     .withMessage('oldPriceInFils must be greater than priceInFils'),
@@ -97,19 +108,17 @@ const updateValidation = [
 
   body('oldPriceInFils')
     .optional({ nullable: true })
-    .customSanitizer(v => (v === '' ? null : v)) // "" => null
+    .customSanitizer(v => (v === '' ? null : v))
     .custom((v) => v === null || /^\d+$/.test(String(v)))
     .withMessage('oldPriceInFils must be an integer or null')
     .custom((v, { req }) => {
-      // لو v === null → السماح بإلغاء الخصم
       if (v === null) return true;
       const price = req.body.priceInFils;
-      // لو ما أُرسل priceInFils مع الطلب، نخلي التحقق في الكنترولر
       if (price == null) return true;
       return Number(v) > Number(price);
     })
     .withMessage('oldPriceInFils must be greater than priceInFils when both are provided')
-    .customSanitizer(v => (v === null ? null : Number(v))), // نخزنه كرقم فعليًا
+    .customSanitizer(v => (v === null ? null : Number(v))),
 
   body('stock')
     .optional()
@@ -134,11 +143,15 @@ const idValidation = [
     .withMessage('Invalid product ID')
 ];
 
-// Public routes
+// ===== CSV Routes (ضعها قبل /:idOrSlug) =====
+router.get('/export.csv', requireAuth, requireAdmin, exportProductsCSV);
+router.post('/import', requireAuth, requireAdmin, upload.single('file'), importProductsCSV);
+
+// ===== Public routes =====
 router.get('/', getProducts);
 router.get('/:idOrSlug', getProduct);
 
-// Admin routes
+// ===== Admin routes =====
 router.post('/', requireAuth, requireAdmin, productValidation, validate, createProduct);
 router.patch('/:id', requireAuth, requireAdmin, idValidation, updateValidation, validate, updateProduct);
 router.delete('/:id', requireAuth, requireAdmin, idValidation, validate, deleteProduct);

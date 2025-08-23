@@ -18,6 +18,7 @@ const categoryRoutes = require("./routes/category.routes");
 const uploadRoutes = require("./routes/upload.routes");
 const wishlistRoutes = require("./routes/wishlist.routes");
 const orderRoutes = require("./routes/order.routes");
+const whatsappRoutes = require("./routes/whatsapp.routes");
 
 const app = express();
 
@@ -26,6 +27,10 @@ connectDB();
 
 // Security middleware
 app.use(helmet());
+
+
+app.use("/api/whatsapp", whatsappRoutes);
+
 
 // CORS configuration
 app.use(cors({
