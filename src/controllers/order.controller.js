@@ -140,7 +140,7 @@ exports.createOrder = async (req, res) => {
       try {
         const totalKwd = (order.totalInFils / 1000).toFixed(3);
         const currency = order.items?.[0]?.currency || 'KWD';
-        const payMethod = paymentMethod ||' سيتم إرسال رابط الدفع لكم لتأكيد الطلب';
+        const payMethod = ' سيتم إرسال رابط الدفع لكم لتأكيد الطلب';
         const address = `${order.shippingAddress.area}, Block ${order.shippingAddress.block}, Street ${order.shippingAddress.street}, House ${order.shippingAddress.houseNo}`;
         const eta = 'Within 24 hours';
 
