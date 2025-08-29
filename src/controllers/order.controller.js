@@ -12,9 +12,30 @@ const toInt = (x, def = 0) => {
   return Number.isFinite(n) ? n : def;
 };
 
+const DEFAULT_PAYMENT_STATUS = 'pending';
+
+async function createOrderDocument(payload, tryOnceIfDuplicate = true) {
+  try {
+    return await Order.create(payload);
+  } catch (err) {
+    // لو صار تعارض بالمفتاح الفريد لرقم الفاتورة، جرّب مرة ثانية فقط
+    if (tryOnceIfDuplicate && err && err.code === 11000 && /invoiceNo/i.test(String(err.message))) {
+      payload.invoiceNo = genInvoiceNo();
+      return createOrderDocument(payload, false);
+    }
+    throw err;
+  }
+}
+
 exports.createOrder = async (req, res) => {
   try {
-    const { customer = {}, shippingAddress = {}, items = [], paymentMethod } = req.body || {};
+    const {
+      customer = {},
+      shippingAddress = {},
+      items = [],
+      paymentMethod,      // 👈 ناخذها من الـbody لو موجودة
+      paymentStatus,      // 👈 لو بعتها (نادرًا)، وإلا نخليها pending
+    } = req.body || {};
 
     // الحقول المطلوبة
     if (
@@ -100,13 +121,13 @@ exports.createOrder = async (req, res) => {
     const shipping = subtotal >= THRESHOLD ? 0 : BASE_SHIP;
     const total = subtotal + shipping;
 
-    const order = await Order.create({
+    const orderPayload = {
       invoiceNo: genInvoiceNo(),
       user: req.user?._id || null,
       customer: {
         name: customer.name.trim(),
         phone: phoneDigits,
-        email: (customer.email || '').trim(),
+        email: (customer.email || '').trim().toLowerCase(),
       },
       shippingAddress: {
         area: shippingAddress.area.trim(),
@@ -121,7 +142,11 @@ exports.createOrder = async (req, res) => {
       shippingInFils: shipping,
       totalInFils: total,
       status: 'pending',
-    });
+      paymentMethod: (paymentMethod || '').trim(),                    // 👈 يُحفظ لو مرسَل
+      paymentStatus: (paymentStatus || DEFAULT_PAYMENT_STATUS).trim() // 👈 pending افتراضيًا
+    };
+
+    const order = await createOrderDocument(orderPayload);
 
     // نقص المخزون (best-effort)
     Promise.all(
@@ -140,11 +165,13 @@ exports.createOrder = async (req, res) => {
       try {
         const totalKwd = (order.totalInFils / 1000).toFixed(3);
         const currency = order.items?.[0]?.currency || 'KWD';
-        const payMethod = ' سيتم إرسال رابط الدفع لكم لتأكيد الطلب';
+        const payMethodText = order.paymentMethod
+          ? order.paymentMethod
+          : 'سيتم إرسال رابط الدفع لكم لتأكيد الطلب';
         const address = `${order.shippingAddress.area}, Block ${order.shippingAddress.block}, Street ${order.shippingAddress.street}, House ${order.shippingAddress.houseNo}`;
         const eta = 'Within 24 hours';
 
-        // القالب الإنجليزي اللي عطيتني:
+        // القالب الإنجليزي:
         // Hi {{1}} 👋
         // We’ve received your order {{2}} successfully.
         // Total: {{3}} {{4}}
@@ -156,7 +183,7 @@ exports.createOrder = async (req, res) => {
           "2": order.invoiceNo,
           "3": totalKwd,
           "4": currency,
-          "5": payMethod,
+          "5": payMethodText,
           "6": address,
           "7": eta
         };
@@ -177,6 +204,8 @@ exports.createOrder = async (req, res) => {
       shippingInFils: order.shippingInFils,
       totalInFils: order.totalInFils,
       status: order.status,
+      paymentMethod: order.paymentMethod || '',
+      paymentStatus: order.paymentStatus || DEFAULT_PAYMENT_STATUS,
       createdAt: order.createdAt,
     });
   } catch (error) {

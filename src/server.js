@@ -20,7 +20,6 @@ const wishlistRoutes = require("./routes/wishlist.routes");
 const orderRoutes = require("./routes/order.routes");
 const whatsappRoutes = require("./routes/whatsapp.routes");
 
-
 const app = express();
 
 // Connect to database
@@ -29,17 +28,38 @@ connectDB();
 // Security middleware
 app.use(helmet());
 
+// ===== CORS configuration (استخدم CLIENT_ORIGIN إن وُجد) =====
+// ===== CORS (Dev mirrors origin / Prod uses CLIENT_ORIGIN) =====
+const ORIGIN_ENV = (CLIENT_ORIGIN || '').trim();
 
-app.use("/api/whatsapp", whatsappRoutes);
+const corsOptions = (NODE_ENV === 'development')
+  ? {
+      // في التطوير: اسمح بأي Origin وخلّه يُعاد كـ Access-Control-Allow-Origin
+      origin: true,
+      credentials: true,
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization"]
+    }
+  : {
+      // في الإنتاج: أصل واحد (من .env)
+      origin: ORIGIN_ENV || "http://localhost:3000",
+      credentials: true,
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization"]
+    };
 
+app.use(cors(corsOptions));
+// دعم الـ preflight صريحًا
+app.options('*', cors(corsOptions));
 
-// CORS configuration
-app.use(cors({
-  origin: 'http://localhost:3000',
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
-}));
+// (اختياري) لوغ بسيط لتشخيص الـ Origin الداخل
+app.use((req, _res, next) => {
+  if (req.headers.origin) {
+    console.log('[CORS] Request from:', req.headers.origin);
+  }
+  next();
+});
+
 
 // Rate limiting
 const limiter = rateLimit({
@@ -77,13 +97,14 @@ app.get("/health", (req, res) => {
   });
 });
 
-// API routes
+// ===== API routes (بعد تفعيل CORS والبارس) =====
 app.use("/api/auth", authRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/uploads", uploadRoutes);
 app.use("/api/users", wishlistRoutes);
 app.use("/api/orders", orderRoutes);
+app.use("/api/whatsapp", whatsappRoutes); // ← نُقلت هنا بعد CORS
 
 // Error handling middleware
 app.use(notFound);
@@ -93,6 +114,3 @@ app.use(errorHandler);
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running in ${NODE_ENV} mode on port ${PORT}`);
 });
-
-
-
