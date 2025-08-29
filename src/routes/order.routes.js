@@ -1,7 +1,6 @@
-// routes/order.routes.js
 const express = require('express');
 const { body, param } = require('express-validator');
-const { createOrder, getOrder } = require('../controllers/order.controller');
+const { createOrder, getOrder, getInvoicePdf } = require('../controllers/order.controller'); // ✅ استيراد موحّد
 const { requireAuth, requireAdmin } = require('../middlewares/auth');
 const validate = require('../middlewares/validate');
 const Order = require('../models/Order'); // موديل الطلبات
@@ -64,8 +63,7 @@ function parsePagination(q) {
  */
 const createOrderValidation = [
   // customer
-  body('customer.name')
-    .trim().notEmpty().withMessage('Customer name is required'),
+  body('customer.name').trim().notEmpty().withMessage('Customer name is required'),
   body('customer.phone')
     .exists().withMessage('Phone is required')
     .bail()
@@ -77,33 +75,21 @@ const createOrderValidation = [
     .normalizeEmail(),
 
   // shippingAddress
-  body('shippingAddress.area')
-    .trim().notEmpty().withMessage('Area is required'),
-  body('shippingAddress.block')
-    .trim().notEmpty().withMessage('Block is required'),
-  body('shippingAddress.street')
-    .trim().notEmpty().withMessage('Street is required'),
-  body('shippingAddress.avenue')
-    .optional({ nullable: true }).trim(),
-  body('shippingAddress.houseNo')
-    .trim().notEmpty().withMessage('House number is required'),
-  body('shippingAddress.notes')
-    .optional({ nullable: true }).trim(),
+  body('shippingAddress.area').trim().notEmpty().withMessage('Area is required'),
+  body('shippingAddress.block').trim().notEmpty().withMessage('Block is required'),
+  body('shippingAddress.street').trim().notEmpty().withMessage('Street is required'),
+  body('shippingAddress.avenue').optional({ nullable: true }).trim(),
+  body('shippingAddress.houseNo').trim().notEmpty().withMessage('House number is required'),
+  body('shippingAddress.notes').optional({ nullable: true }).trim(),
 
   // items
-  body('items')
-    .isArray({ min: 1 }).withMessage('Items array is required and must not be empty'),
+  body('items').isArray({ min: 1 }).withMessage('Items array is required and must not be empty'),
 
   // ندعم product أو productId
-  body('items.*.product')
-    .optional({ nullable: true })
-    .isMongoId().withMessage('items.*.product must be a valid MongoDB ObjectId'),
-  body('items.*.productId')
-    .optional({ nullable: true })
-    .isMongoId().withMessage('items.*.productId must be a valid MongoDB ObjectId'),
+  body('items.*.product').optional({ nullable: true }).isMongoId().withMessage('items.*.product must be a valid MongoDB ObjectId'),
+  body('items.*.productId').optional({ nullable: true }).isMongoId().withMessage('items.*.productId must be a valid MongoDB ObjectId'),
 
-  body('items.*.qty')
-    .isInt({ min: 1 }).withMessage('Each item qty must be at least 1'),
+  body('items.*.qty').isInt({ min: 1 }).withMessage('Each item qty must be at least 1'),
 
   // تأكيد وجود أحد الحقلين product أو productId لكل عنصر
   body('items').custom((items) => {
@@ -122,7 +108,8 @@ const createOrderValidation = [
 router.post('/', createOrderValidation, validate, createOrder);
 
 /* ==================== أدمن: تصدير CSV ==================== */
-/* مهم: هذا المسار يجب أن يكون قبل "/:id" لتجنب التعارض */
+// GET /api/orders/export.csv (Admin only)
+// (حطه قبل "/:id" لتجنب أي التباس)
 router.get('/export.csv', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { q, status } = req.query;
@@ -141,9 +128,7 @@ router.get('/export.csv', requireAuth, requireAdmin, async (req, res) => {
 
     const orders = await Order.find(filter).sort(sort).limit(5000);
 
-    const rows = [
-      ['id','date','customer','email','phone','status','paymentMethod','totalKWD','itemsCount']
-    ];
+    const rows = [['id','date','customer','email','phone','status','paymentMethod','totalKWD','itemsCount']];
     for (const o of orders) {
       const total = o.totalInFils != null ? (o.totalInFils / 1000).toFixed(3) : (o.total || 0);
       rows.push([
@@ -155,7 +140,7 @@ router.get('/export.csv', requireAuth, requireAdmin, async (req, res) => {
         o.status || '',
         o.paymentMethod || '',
         total,
-        (o.items || []).reduce((a,b)=>a + (b.qty || 0), 0)
+        (o.items || []).reduce((a, b) => a + (b.qty || 0), 0),
       ]);
     }
 
@@ -245,8 +230,19 @@ router.put(
   }
 );
 
-/* ==================== محمي: عرض طلب واحد (موجود سابقًا) ==================== */
-// GET /api/orders/:id (يتطلب تسجيل دخول؛ الكنترولر يتحقق من الملكية/الأدمن)
+/* ==================== أدمن: PDF للفاتورة ==================== */
+// GET /api/orders/:id/invoice.pdf (Admin only)
+router.get(
+  '/:id/invoice.pdf',
+  requireAuth,
+  requireAdmin,
+  [param('id').isMongoId().withMessage('Invalid order ID')],
+  validate,
+  getInvoicePdf
+);
+
+/* ==================== محمي: عرض طلب واحد ==================== */
+// GET /api/orders/:id (يتطلب تسجيل دخول؛ getOrder يتحقق من الملكية/الأدمن)
 router.get(
   '/:id',
   requireAuth,

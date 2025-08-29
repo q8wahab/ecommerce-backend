@@ -236,3 +236,150 @@ exports.getOrder = async (req, res) => {
     return res.status(500).json({ error: error.message });
   }
 };
+
+
+// === PDF Invoice (HTML renderer + puppeteer) ===
+const puppeteer = require('puppeteer');
+
+function renderInvoiceHtml(order) {
+  const items = order.items || [];
+  const toKwd = (fils) => (typeof fils === 'number' ? (fils / 1000).toFixed(3) : (order.total || 0));
+  const totalKwd = toKwd(order.totalInFils);
+  const subKwd = toKwd(order.subtotalInFils);
+  const shipKwd = toKwd(order.shippingInFils);
+  const addr = order.shippingAddress || {};
+  const cust = order.customer || {};
+
+  const fmt = (v) => (v == null || v === '' ? '-' : String(v));
+
+  const addressLines = [
+    addr.area ? `Area: ${addr.area}` : null,
+    addr.block ? `Block: ${addr.block}` : null,
+    addr.street ? `Street: ${addr.street}` : null,
+    addr.avenue ? `Avenue: ${addr.avenue}` : null,
+    addr.houseNo ? `House: ${addr.houseNo}` : null,
+    addr.notes ? `Notes: ${addr.notes}` : null,
+  ].filter(Boolean);
+
+  const rows = items.map((it, i) => {
+    const lineTotal = (it.priceInFils || 0) * (it.qty || 1);
+    return `
+      <tr>
+        <td>${i + 1}</td>
+        <td>${fmt(it.title || it.product?.title)}</td>
+        <td>${fmt(it.qty)}</td>
+        <td>${toKwd(it.priceInFils)}</td>
+        <td>${toKwd(lineTotal)}</td>
+      </tr>`;
+  }).join('');
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Invoice ${order.invoiceNo}</title>
+  <style>
+    body{font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Arial, sans-serif; color:#222; margin:24px;}
+    .header{display:flex; justify-content:space-between; align-items:flex-start; gap:16px;}
+    h1{margin:0 0 4px;}
+    small{color:#666}
+    .box{border:1px solid #ddd; border-radius:8px; padding:12px; margin:12px 0;}
+    table{width:100%; border-collapse:collapse; margin-top:6px;}
+    th,td{border:1px solid #eee; padding:8px; text-align:left;}
+    th{background:#fafafa}
+    .totals{margin-top:8px; width:280px; margin-left:auto;}
+    .totals td{border:none; padding:4px 0;}
+    .badges{display:flex; gap:8px; align-items:center}
+    .badge{border:1px solid #ccc; border-radius:20px; padding:2px 10px; font-size:12px;}
+    .right{text-align:right}
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>Invoice</h1>
+      <div><small>#${order.invoiceNo}</small></div>
+      <div><small>${order.createdAt ? new Date(order.createdAt).toLocaleString() : ''}</small></div>
+      <div class="badges" style="margin-top:6px">
+        <span class="badge">Status: ${fmt(order.status)}</span>
+        <span class="badge">Payment: ${fmt(order.paymentMethod)}</span>
+        <span class="badge">Pay Status: ${fmt(order.paymentStatus)}</span>
+      </div>
+    </div>
+    <div>
+      <strong>24ozkw</strong><br/>
+      <small>support@24ozkw.com</small>
+    </div>
+  </div>
+
+  <div class="box">
+    <strong>Customer</strong><br/>
+    ${fmt(cust.name)}<br/>
+    <small>${fmt(cust.email)}</small><br/>
+    <small>${fmt(cust.phone)}</small>
+  </div>
+
+  <div class="box">
+    <strong>Shipping Address</strong>
+    <div style="margin-top:6px">
+      ${addressLines.length ? addressLines.map(l => `<div>${l}</div>`).join('') : '-'}
+    </div>
+  </div>
+
+  <div class="box">
+    <strong>Items</strong>
+    <table>
+      <thead>
+        <tr><th>#</th><th>Product</th><th>Qty</th><th>Price (KWD)</th><th>Total (KWD)</th></tr>
+      </thead>
+      <tbody>${rows || `<tr><td colspan="5">No items</td></tr>`}</tbody>
+    </table>
+
+    <table class="totals">
+      <tbody>
+        <tr><td>Subtotal:</td><td class="right">${subKwd} KWD</td></tr>
+        <tr><td>Shipping:</td><td class="right">${shipKwd} KWD</td></tr>
+        <tr><td><strong>Grand Total:</strong></td><td class="right"><strong>${totalKwd} KWD</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>`;
+}
+
+exports.getInvoicePdf = async (req, res) => {
+  try {
+    const { id } = req.params;
+    // إدمن فقط (التحقق يتم في الراوتر)
+    const order = await Order.findById(id)
+      .populate('items.product', 'title')
+      .populate('user', 'name email');
+
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    const html = renderInvoiceHtml(order);
+
+    const browser = await puppeteer.launch({
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: 'networkidle0' });
+
+    const pdf = await page.pdf({
+      format: 'A4',
+      printBackground: true,
+      margin: { top: '12mm', right: '12mm', bottom: '12mm', left: '12mm' }
+    });
+
+    await browser.close();
+
+    const filename = `invoice_${order.invoiceNo || String(order._id).slice(-6)}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.end(pdf);
+  } catch (e) {
+    console.error('invoice.pdf error:', e);
+    res.status(500).json({ message: 'Failed to render invoice PDF' });
+  }
+};
